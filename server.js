@@ -81,9 +81,9 @@ app.post("/process-file", authenticate, async (req, res) => {
   }
 });
 
-const server = app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server running on http://0.0.0.0:${PORT}`);
+app.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
 });
 
-server.keepAliveTimeout = 350000;
-server.headersTimeout = 350000;
+// server.keepAliveTimeout = 120000;
+// server.headersTimeout = 120000;
