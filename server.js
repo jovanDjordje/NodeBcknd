@@ -43,20 +43,22 @@ app.post("/process-file", authenticate, async (req, res) => {
       `Starting processing for jobId: ${jobId} with file: ${fileUrl}`
     );
 
-    // Immediately update the job status to "processing"
+    // **Immediately update Supabase status**
     await supabase
       .from("jobs")
       .update({ status: "processing", updated_at: new Date().toISOString() })
       .eq("job_id", jobId);
 
-    // Fire-and-forget processing
+    // **Return response immediately and close connection**
+    res.status(202).json({ message: "Processing started", jobId });
+    res.end(); // 🔥 **Explicitly close the response**
+
+    // **Run processing in the background**
     processFile(fileUrl, jobId)
       .then(async (processedFileUrl) => {
         console.log(
           `Processing complete for job ${jobId}: ${processedFileUrl}`
         );
-
-        // Update the job record in Supabase with the processed file URL
         await supabase
           .from("jobs")
           .update({
@@ -65,19 +67,14 @@ app.post("/process-file", authenticate, async (req, res) => {
             updated_at: new Date().toISOString(),
           })
           .eq("job_id", jobId);
-        console.log("Job processing completed for", jobId);
       })
       .catch(async (err) => {
         console.error(`Error processing job ${jobId}:`, err);
-
-        // Update the job record with an "error" status if processing fails
         await supabase
           .from("jobs")
           .update({ status: "error", updated_at: new Date().toISOString() })
           .eq("job_id", jobId);
       });
-
-    res.status(200).json({ message: "Processing initiated", jobId });
   } catch (error) {
     console.error("Unexpected error in processing:", error);
     res.status(500).json({ error: "Internal Server Error" });
@@ -87,3 +84,6 @@ app.post("/process-file", authenticate, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
+
+server.keepAliveTimeout = 350000;
+server.headersTimeout = 350000;
