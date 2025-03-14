@@ -27,6 +27,10 @@ function authenticate(req, res, next) {
   console.log("Authentication successful");
   next();
 }
+app.get("/ping", (req, res) => {
+  console.log("Ping received");
+  res.status(200).json({ message: "pong" });
+});
 
 // Processing endpoint
 app.post("/process-file", authenticate, async (req, res) => {
