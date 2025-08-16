@@ -15,11 +15,11 @@ const model = genAI.getGenerativeModel({
   model: "gemini-2.0-flash",
 });
 const generationConfig = {
-  temperature: 1,
+  temperature: 0.2,
   topP: 0.95,
   topK: 40,
   maxOutputTokens: 8192,
-  responseMimeType: "text/plain",
+  responseMimeType: "application/json",
 };
 
 // Use the provided storageClient or create a new one.
@@ -100,6 +100,42 @@ function resolveColumnsForSingleSheet(worksheet) {
     ]) ?? 3; // fallback: column D
 
   return { sourceColIndex, targetColIndex };
+}
+async function translateBatchByIds(items, customHeader) {
+  // items = array of strings (the batch)
+  // Build a numbered list so we can align by index
+  const payload = items.map((t, i) => `${i}\t${t}`).join("\n");
+
+  const prompt = `Translate the following lines to Norwegian${
+    customHeader || ""
+  }.
+Return ONLY a JSON array where each element is:
+  { "id": <number>, "value": "<translation>" }
+Rules:
+- Keep the "id" exactly as given.
+- Do NOT include the original text in the output.
+- Do NOT include any extra commentary; output must be valid JSON array.
+
+Lines (tab-separated "id<TAB>text"):
+${payload}`;
+
+  // Start a fresh chat and send ONE message
+  const chat = await model.startChat({ generationConfig });
+  const res = await chat.sendMessage(prompt);
+
+  // Because responseMimeType is application/json, this should be clean JSON:
+  const text = res.response.text(); // JSON string
+  let arr;
+  try {
+    arr = JSON.parse(text);
+  } catch (e) {
+    // Fallback: try to extract the first JSON array in case the model wrapped it (rare)
+    const match = text.match(/\[[\s\S]*\]/);
+    if (!match) throw new Error("Model did not return JSON array");
+    arr = JSON.parse(match[0]);
+  }
+  // Expect [{id:number, value:string}, ...]
+  return arr;
 }
 
 //-------------------------------
@@ -251,46 +287,65 @@ async function processFile(fileUrl, jobId) {
   const batchSize = 100;
   for (let i = 0; i < uniqueList.length; i += batchSize) {
     const batch = uniqueList.slice(i, i + batchSize);
-    const prompt = `Translate the lines of text after delimiter "-->" to Norwegian.${customHeader}.
-Respond with a JSON array where each entry is an object with two keys:
-  "key": the original text exactly as provided,
-  "value": the Norwegian translation.
-For example, if the input is:
-Select...
-New
-The output should be:
-[
-  {"key": "Select...", "value": "Velg..."},
-  {"key": "New", "value": "Nytt"}
-]
-Do not output any additional text.
-Here are the strings -->
-${batch.join("\n")}`;
-    console.log(`Translating unique batch ${Math.floor(i / batchSize) + 1}`);
-    let translatedBatch;
+    //     const prompt = `Translate the lines of text after delimiter "-->" to Norwegian.${customHeader}.
+    // Respond with a JSON array where each entry is an object with two keys:
+    //   "key": the original text exactly as provided,
+    //   "value": the Norwegian translation.
+    // For example, if the input is:
+    // Select...
+    // New
+    // The output should be:
+    // [
+    //   {"key": "Select...", "value": "Velg..."},
+    //   {"key": "New", "value": "Nytt"}
+    // ]
+    // Do not output any additional text.
+    // Here are the strings -->
+    // ${batch.join("\n")}`;
+    //     console.log(`Translating unique batch ${Math.floor(i / batchSize) + 1}`);
+    //     let translatedBatch;
+    //     try {
+    //       translatedBatch = await translateBatch(prompt);
+    //       if (translatedBatch.length !== batch.length) {
+    //         console.warn(
+    //           `Unique batch translation count mismatch: expected ${batch.length} but got ${translatedBatch.length}`
+    //         );
+    //       }
+    //     } catch (err) {
+    //       console.error(
+    //         `Error translating unique batch starting at index ${i}:`,
+    //         err
+    //       );
+    //       // Mark translations as empty for this batch.
+    //       batch.forEach((original) => {
+    //         translationCache[original] = "";
+    //       });
+    //       continue;
+    //     }
+    //     // Update cache with translations.
+    //     translatedBatch.forEach((translationObj) => {
+    //       const key = translationObj.key.trim();
+    //       translationCache[key] = translationObj.value;
+    //     });
+
+    // new addOn fix for not sending the prompt twice and Id-based matching with values and not initial value
+    let results = [];
     try {
-      translatedBatch = await translateBatch(prompt);
-      if (translatedBatch.length !== batch.length) {
-        console.warn(
-          `Unique batch translation count mismatch: expected ${batch.length} but got ${translatedBatch.length}`
-        );
-      }
+      const translated = await translateBatchByIds(batch, customHeader);
+      results = translated.map((o) => ({
+        key: batch[o.id], // original text by index
+        value: o.value ?? "",
+      }));
     } catch (err) {
-      console.error(
-        `Error translating unique batch starting at index ${i}:`,
-        err
-      );
-      // Mark translations as empty for this batch.
-      batch.forEach((original) => {
-        translationCache[original] = "";
-      });
-      continue;
+      console.error(`Batch @${i} failed:`, err);
+      results = batch.map((_, idx) => ({ key: batch[idx], value: "" }));
     }
-    // Update cache with translations.
-    translatedBatch.forEach((translationObj) => {
-      const key = translationObj.key.trim();
-      translationCache[key] = translationObj.value;
-    });
+
+    // Fill in-memory cache
+    for (const { key, value } of results) {
+      translationCache[key] = value;
+    }
+    //-------------------------------------------------------------------------------------------------------
     // Optionally update progress based on unique translations.
     const processedUnique = Math.min(uniqueList.length, i + batchSize);
     const progress = Math.round((processedUnique / uniqueList.length) * 100);
