@@ -291,6 +291,24 @@ async function processFile(fileUrl, jobId) {
   console.log(
     `Total rows to process: ${rowsToTranslate.length}; Unique texts: ${uniqueTexts.size}; Skipped (already translated): ${skippedRows}`
   );
+
+  // Handle edge case: all rows already translated
+  if (rowsToTranslate.length === 0 && skippedRows > 0) {
+    console.log("All rows already translated. Returning original file.");
+
+    // Update job status to completed
+    await supabase
+      .from("jobs")
+      .update({
+        status: "completed",
+        progress: 100,
+        processed_file_url: fileUrl, // Return original file URL
+        updated_at: new Date().toISOString(),
+      })
+      .eq("job_id", jobId);
+
+    return fileUrl; // Return the original file URL
+  }
   //-------------------------
 
   // Step 2: Translate unique texts in batches.
