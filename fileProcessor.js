@@ -43,6 +43,11 @@ function getCell(worksheet, cIndex, rIndex) {
   return worksheet[ref];
 }
 
+// Check if a cell has meaningful content
+function hasContent(cell) {
+  return cell && cell.v && typeof cell.v === "string" && cell.v.trim() !== "";
+}
+
 // Find a column by header label (row 1), supporting exact strings or regex.
 // Returns a column index or null.
 function findColumnByHeader(worksheet, candidates) {
@@ -267,17 +272,24 @@ async function processFile(fileUrl, jobId) {
   // Collect rows & unique texts starting from row after header
   let rowsToTranslate = [];
   let uniqueTexts = new Set();
+  let skippedRows = 0;
   const range = XLSX.utils.decode_range(worksheet["!ref"]);
   for (let r = range.s.r + 1; r <= range.e.r; r++) {
-    const cell = getCell(worksheet, sourceColIndex, r);
-    if (cell && cell.t === "s" && typeof cell.v === "string" && cell.v.trim()) {
-      const original = cell.v.trim();
+    const sourceCell = getCell(worksheet, sourceColIndex, r);
+    const targetCell = getCell(worksheet, targetColIndex, r);
+
+    // Only add to translation queue if source has content AND target is empty
+    if (hasContent(sourceCell) && !hasContent(targetCell)) {
+      const original = sourceCell.v.trim();
       rowsToTranslate.push({ sheetName, row: r, original, targetColIndex });
       uniqueTexts.add(original);
+    } else if (hasContent(sourceCell) && hasContent(targetCell)) {
+      // Count rows that already have translations
+      skippedRows++;
     }
   }
   console.log(
-    `Total rows to process: ${rowsToTranslate.length}; Unique texts: ${uniqueTexts.size}`
+    `Total rows to process: ${rowsToTranslate.length}; Unique texts: ${uniqueTexts.size}; Skipped (already translated): ${skippedRows}`
   );
   //-------------------------
 
@@ -285,6 +297,9 @@ async function processFile(fileUrl, jobId) {
   const translationCache = {}; // Cache: original text => translated text
   const uniqueList = Array.from(uniqueTexts);
   const batchSize = 100;
+  let failedBatchCount = 0;
+  const totalBatches = Math.ceil(uniqueList.length / batchSize);
+
   for (let i = 0; i < uniqueList.length; i += batchSize) {
     const batch = uniqueList.slice(i, i + batchSize);
     //     const prompt = `Translate the lines of text after delimiter "-->" to Norwegian.${customHeader}.
@@ -338,7 +353,9 @@ async function processFile(fileUrl, jobId) {
       }));
     } catch (err) {
       console.error(`Batch @${i} failed:`, err);
-      results = batch.map((_, idx) => ({ key: batch[idx], value: "" }));
+      failedBatchCount++;
+      // Keep original text instead of empty strings when translation fails
+      results = batch.map((_, idx) => ({ key: batch[idx], value: batch[idx] }));
     }
 
     // Fill in-memory cache
@@ -354,6 +371,23 @@ async function processFile(fileUrl, jobId) {
       .from("jobs")
       .update({ progress, updated_at: new Date().toISOString() })
       .eq("job_id", jobId);
+  }
+
+  // Check if any batches failed during translation
+  if (failedBatchCount > 0) {
+    const errorMessage = `Translation failed: ${failedBatchCount} out of ${totalBatches} batches failed. Please try again.`;
+    console.error(errorMessage);
+
+    // Update job status to error
+    await supabase
+      .from("jobs")
+      .update({
+        status: "error",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("job_id", jobId);
+
+    throw new Error(errorMessage);
   }
 
   // Step 3: Assign translations to each row using the cache.
